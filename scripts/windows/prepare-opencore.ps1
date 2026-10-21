@@ -60,8 +60,8 @@ c['Kernel']['Quirks'].update(AppleXcpmExtraMsrs=True, DisableLinkeditJettison=Fa
 c['Misc']['Boot'].update(HideAuxiliary=False, Timeout=0)
 c['Misc']['Debug'].update(AppleDebug=True, ApplePanic=True, DisplayLevel=0x80000042, Target=75)
 c['Misc']['Serial']['Init'] = True
-# Scan Apple filesystems, excluding the FAT bootstrap volume that would boot OpenCore again.
-c['Misc']['Security'].update(ScanPolicy=0x301, SecureBootModel='x86legacy', DmgLoading='Signed', Vault='Optional')
+# Scan APFS/HFS plus the FAT EFI System Partition that contains Tahoe Recovery.
+c['Misc']['Security'].update(ScanPolicy=0x701, SecureBootModel='x86legacy', DmgLoading='Signed', Vault='Optional')
 apple = '7C436110-AB2A-4BBB-A880-FE41995C9F82'
 c['NVRAM']['Add'][apple] = {'boot-args': '-v keepsyms=1 serial=3 debug=0x108', 'csr-active-config': bytes(4),
                           'prev-lang:kbd': b'en:252', 'run-efi-updater': 'No'}

@@ -122,8 +122,12 @@ source=root/'sample.plist'; target=root/'generated.plist'
 source.write_bytes(plistlib.dumps(sample)); sys.argv=['base',str(source),str(target)]
 exec(script,{})
 c=plistlib.loads(target.read_bytes()); policy=c['Misc']['Security']['ScanPolicy']
-assert policy & 1 and policy & (1<<8) and policy & (1<<9)
-assert not policy & (1<<10), 'OpenCore FAT/ESP bootstrap must not become the default OS'
+assert policy == 0x701, f'expected only filesystem lock, APFS, HFS and ESP scanning; got {policy:#x}'
+assert policy & 1 and policy & (1<<8) and policy & (1<<9) and policy & (1<<10)
+old_policy=0x301
+assert old_policy & 1 and old_policy & (1<<8) and old_policy & (1<<9)
+assert not old_policy & (1<<10), 'regression fixture must reproduce the prior ESP exclusion'
+assert policy ^ old_policy == (1<<10), 'only the ESP scanning bit may change'
 assert c['Misc']['Security']['SecureBootModel']=='x86legacy'
 assert c['NVRAM']['Add']['7C436110-AB2A-4BBB-A880-FE41995C9F82']['csr-active-config']==bytes(4)
 '@
