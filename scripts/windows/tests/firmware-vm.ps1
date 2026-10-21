@@ -76,7 +76,9 @@ try {
     Assert-Condition ('-no-shutdown' -in $command) 'Normal power-off retains the QEMU process'
     Assert-Condition ('ICH9-LPC.disable_s3=1' -in $command -and 'ICH9-LPC.disable_s4=1' -in $command) 'Unsupported ACPI sleep and hibernation are not advertised'
     Assert-Condition ($command[$command.IndexOf('-L') + 1] -eq (ConvertTo-ReimsQemuPath (Join-Path $testRoot 'vendor/qemu/pc-bios'))) 'ROM lookup is independent of the QEMU build directory'
-    Assert-Condition (($command | Where-Object { $_ -like 'id=installer,*' }) -match 'snapshot=on') 'APM original is protected by an overlay'
+    Assert-Condition (($command | Where-Object { $_ -like 'id=installer,*' }) -match 'snapshot=on') 'Installer disk source is protected by an overlay'
+    Assert-Condition ((($command | Where-Object { $_ -like 'id=installer,*' }) -match '^id=installer,if=none,format=raw,snapshot=on,file=') -and
+        ('ide-hd,bus=sata.4,drive=installer' -in $command)) 'Recovery wrappers use the existing snapshot-backed raw disk on SATA 4'
     Assert-Condition (($command | Where-Object { $_ -like 'id=opencore,*' }) -match 'snapshot=on') 'OpenCore template is protected by an overlay'
     $gfx = ($command | Where-Object { $_.StartsWith('{') } | ConvertFrom-Json)
     Assert-Condition ($gfx.driver -eq 'apple-gfx-pci' -and $gfx.resolution -eq '1920x1080' -and '3840x2160@60' -in $gfx.'display-modes') 'Actual GPU ABI, 1080p and offered 4K mode'
@@ -179,6 +181,12 @@ efi[128:132]=b'PE\0\0'; struct.pack_into('<H',efi,132,0x8664)
     if ($LASTEXITCODE -ne 0) { throw 'Media fixture setup failed.' }
     $parsed = $mediaParser | & $python - (Join-Path $fixtureDirectory 'media.iso') $fixtureDirectory | ConvertFrom-Json
     Assert-Condition ($LASTEXITCODE -eq 0 -and $parsed.media_kind -eq 'disk' -and $parsed.boot_architecture -eq 'x86_64') 'APM parser identifies x86_64 PE booters'
+    $isoFixture = [byte[]]::new(16 * 2048 + 7)
+    $isoIdentifier = [Text.Encoding]::ASCII.GetBytes('CD001')
+    [Array]::Copy($isoIdentifier, 0, $isoFixture, 16 * 2048 + 1, $isoIdentifier.Length)
+    [IO.File]::WriteAllBytes((Join-Path $fixtureDirectory 'media.iso'), $isoFixture)
+    $parsedIso = $mediaParser | & $python - (Join-Path $fixtureDirectory 'media.iso') $fixtureDirectory | ConvertFrom-Json
+    Assert-Condition ($LASTEXITCODE -eq 0 -and $parsedIso.media_kind -eq 'cdrom' -and $parsedIso.container -eq 'ISO9660') 'ISO9660 installer inspection remains a CD-ROM'
     $badPe = [IO.File]::ReadAllBytes((Join-Path $fixtureDirectory 'boot.efi'))
     $badPe[132] = 0x64; $badPe[133] = 0xaa
     [IO.File]::WriteAllBytes((Join-Path $fixtureDirectory 'boot.efi'), $badPe)

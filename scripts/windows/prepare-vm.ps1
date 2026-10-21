@@ -6,6 +6,7 @@ param(
     [string]$QemuImg,
     [switch]$InspectOnly,
     [switch]$HashIso,
+    [switch]$RecoveryWrapper,
     [ValidateRange(64,2048)][int]$DiskGiB = 128,
     [ValidateRange(1024, 65535)][int]$QmpPort = 4444,
     [ValidateRange(1024, 65535)][int]$SshPort = 2222
@@ -27,6 +28,13 @@ $SevenZip = Get-ReimsTool '7z.exe' $SevenZip
 $python = Get-ReimsTool 'python.exe'
 $inspection = Join-Path $VmRoot 'media/inspection'
 New-Item -ItemType Directory -Force -Path $inspection, $state | Out-Null
+if ($RecoveryWrapper) {
+    $helper = Join-Path $PSScriptRoot 'recovery_media.py'
+    $json = & $python $helper inspect --image $Iso
+    if ($LASTEXITCODE -ne 0) { throw 'Recovery wrapper GPT/FAT32 contents/hash validation failed.' }
+    $media = $json | ConvertFrom-Json -AsHashtable
+    $media.recovery_wrapper = $true
+} else {
 $listing = Invoke-ReimsTool $SevenZip @('l', '-slt', $Iso)
 $listing | Set-Content -LiteralPath (Join-Path $inspection 'contents.txt') -Encoding utf8NoBOM
 $paths = @($listing | Where-Object { $_ -like 'Path = *' } | ForEach-Object { $_.Substring(7) })
@@ -62,6 +70,7 @@ print(json.dumps({'schema':1, 'path':str(image), 'bytes':image.stat().st_size,
 $json = $script | & $python - $Iso $inspection
 if ($LASTEXITCODE -ne 0) { throw 'Installer header/version/architecture validation failed.' }
 $media = $json | ConvertFrom-Json -AsHashtable
+}
 $media.last_write_ticks = $modified
 if ($HashIso) { $media.sha256 = (Get-FileHash -LiteralPath $Iso -Algorithm SHA256).Hash }
 elseif (Test-Path -LiteralPath $mediaState) {
