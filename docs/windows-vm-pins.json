@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "pins": {
+    "scripts_commit": "14c81277ed23c76e5c04481127d3c05f348ffec6",
+    "reims_commit": "7f37f7654e441dee0f468954a96d8f94cb7e2ff4",
+    "qemu_submodule_commit": "b17ae0919ec29f7989a568b27651c32400fb4504",
+    "metal2vulkan_commit": "ea5d6b877ea54e45676d199782f3db1b54fbaaa4",
+    "qemu_sha256": "16CBAC804B2262D27F176283A1F27F09794B345EF6800D6CF14A5C94B31468F9",
+    "qemu_img_sha256": "884FA47B3ACB69C3CC53418385D76D3F53FF0CB3C5F3DD69F7FF5B32029736B2",
+    "reims_dll_sha256": "869215D0D515A38F6CC8CF7A65A750FEDC064F11B067D6714F74089FE3D76015",
+    "reims_rom_sha256": "12B8167A7EEC4B0683C69B2C34A2C3CB929FC906E92AFCDC592A2AB42E1DE32A",
+    "ovmf_archive_sha256": "55f87e3a1448f5cf1cd7d7b9f061846a13b9571eb9b1a1df51eab3d9a9d42429",
+    "ovmf_code_sha256": "33090CC07675BAA5190D9F1E84BF5176B33BCBFA9BACAC522961150CDB6DBB2A",
+    "ovmf_vars_template_sha256": "5D2AC383371B408398ACCEE7EC27C8C09EA5B74A0DE0CEEA6513388B15BE5D1E",
+    "opencore_zip_sha256": "2011E8B7216ECB2645D97EA710DF965947EDD406846E92050B9BC4190BE6D27B",
+    "recovery_dmg_sha256": "EDDDD0D5869CAAA12E29E6996A04F11590280580976A119DBD42C24FA62FE18E",
+    "recovery_chunklist_sha256": "06F7C498F856341F467BA1FAEDF2717FB2C172AE0AFF4658A1467CBF46B711F9",
+    "recovery_wrapper_sha256": "F586EAE42B6D3662B37B8C38C99528BB086581D5D054DBC331E0E0CC1DEA07FD"
+  },
+  "inputs": [
+    { "name": "qemu", "path": "build/qemu/qemu-system-x86_64.exe", "sha256Pin": "qemu_sha256", "requiredFor": ["Fresh", "Restore"], "copyInModes": [] },
+    { "name": "qemu_img", "path": "build/qemu/qemu-img.exe", "sha256Pin": "qemu_img_sha256", "requiredFor": ["Fresh", "Restore"], "copyInModes": [] },
+    { "name": "reims_dll", "path": "build/qemu/reims_vgpu_c.dll", "sha256Pin": "reims_dll_sha256", "requiredFor": ["Fresh", "Restore"], "copyInModes": [] },
+    { "name": "reims_rom", "path": ".work/target/dist-vulkan/share/reims-vgpu/ReimsVgpu.rom", "sha256Pin": "reims_rom_sha256", "requiredFor": ["Fresh", "Restore"], "copyInModes": [] },
+    { "name": "ovmf_code", "path": "firmware/edk2-x86_64-code.fd", "sha256Pin": "ovmf_code_sha256", "requiredFor": ["Fresh", "Restore"], "copyInModes": ["Fresh"], "estimatedCopyGiB": 0.008 },
+    { "name": "ovmf_vars_template", "path": "firmware/edk2-i386-vars.fd", "sha256Pin": "ovmf_vars_template_sha256", "requiredFor": ["Fresh"], "copyInModes": ["Fresh"], "estimatedCopyGiB": 0.004 },
+    { "name": "opencore_zip", "path": "downloads/OpenCore-1.0.8-RELEASE.zip", "sha256Pin": "opencore_zip_sha256", "requiredFor": ["Fresh", "Restore"], "copyInModes": [] },
+    { "name": "recovery_dmg", "path": "media/BaseSystem.dmg", "sha256Pin": "recovery_dmg_sha256", "requiredFor": ["Fresh"], "copyInModes": [] },
+    { "name": "recovery_chunklist", "path": "media/BaseSystem.chunklist", "sha256Pin": "recovery_chunklist_sha256", "requiredFor": ["Fresh"], "copyInModes": [] },
+    { "name": "recovery_wrapper", "path": "media/Recovery-only.raw", "sha256Pin": "recovery_wrapper_sha256", "requiredFor": ["Fresh"], "copyInModes": ["Fresh"], "estimatedCopyGiB": 16 }
+  ],
+  "vm": {
+    "macos_recovery": "Tahoe 26.6.2 Recovery (online installer may advance the installed point release)",
+    "cpus": 8,
+    "memory_mib": 8192,
+    "disk_gib": 128,
+    "resolution": "1920x1080",
+    "cpu": "Haswell-noTSX,stepping=3,vendor=GenuineIntel,+ssse3,+sse4.2,+popcnt,+avx,+avx2,+aes,+xsave,+xsaveopt,-arat,enforce",
+    "accelerator": "whpx,hyperv=off",
+    "audio": "none",
+    "microphone": false,
+    "usb_backend": "winusb",
+    "qmp_host": "127.0.0.1",
+    "qmp_port": 4444,
+    "ssh_host": "127.0.0.1",
+    "ssh_port": 2222,
+    "estimated_guest_growth_gib": 40,
+    "estimated_working_gib": 1
+  }
+}
