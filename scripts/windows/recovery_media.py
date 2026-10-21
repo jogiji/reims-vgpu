@@ -188,19 +188,26 @@ def _fsinfo() -> bytes:
     return bytes(info)
 
 
-def create_wrapper(output: Path, dmg: Path, chunklist: Path, bootx64: Path) -> dict:
-    output, dmg, chunklist, bootx64 = map(Path, (output, dmg, chunklist, bootx64))
-    for path, label in ((dmg, "BaseSystem.dmg"), (chunklist, "BaseSystem.chunklist"), (bootx64, "EFI/BOOT/BOOTx64.efi")):
+def create_wrapper(output: Path, dmg: Path, chunklist: Path, bootx64: Path | None) -> dict:
+    recovery_only = bootx64 is None
+    output, dmg, chunklist = map(Path, (output, dmg, chunklist))
+    if bootx64 is not None:
+        bootx64 = Path(bootx64)
+    inputs = [(dmg, "BaseSystem.dmg"), (chunklist, "BaseSystem.chunklist")]
+    if bootx64 is not None:
+        inputs.append((bootx64, "EFI/BOOT/BOOTx64.efi"))
+    for path, label in inputs:
         if not path.is_file() or path.stat().st_size == 0:
             raise ValueError(f"{label} is missing or empty.")
     if _sha256(dmg) != PINNED_DMG_SHA256:
         raise ValueError("BaseSystem.dmg SHA-256 does not match the reviewed Apple Recovery pin.")
     if _sha256(chunklist) != PINNED_CHUNKLIST_SHA256:
         raise ValueError("BaseSystem.chunklist SHA-256 does not match the reviewed Apple Recovery pin.")
-    if _sha256(bootx64) != PINNED_OPENCORE_BOOT_SHA256:
-        raise ValueError("EFI/BOOT/BOOTx64.efi SHA-256 does not match OpenCore 1.0.8.")
-    if _pe_machine(bootx64) != 0x8664:
-        raise ValueError("EFI/BOOT/BOOTx64.efi is not x86_64.")
+    if bootx64 is not None:
+        if _sha256(bootx64) != PINNED_OPENCORE_BOOT_SHA256:
+            raise ValueError("EFI/BOOT/BOOTx64.efi SHA-256 does not match OpenCore 1.0.8.")
+        if _pe_machine(bootx64) != 0x8664:
+            raise ValueError("EFI/BOOT/BOOTx64.efi is not x86_64.")
     if output.exists():
         raise FileExistsError(f"Refusing to overwrite Recovery wrapper: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -214,19 +221,22 @@ def create_wrapper(output: Path, dmg: Path, chunklist: Path, bootx64: Path) -> d
     cluster_bytes = CLUSTER_SECTORS * SECTOR
     fat = [0] * (cluster_count + 2)
     fat[0:3] = [0x0FFFFFF8, 0xFFFFFFFF, 0x0FFFFFFF]
-    directory_clusters = {
-        "": 2,
-        "EFI": 3,
-        "EFI/BOOT": 4,
-        "com.apple.recovery.boot": 5,
-    }
+    if recovery_only:
+        directory_clusters = {"": 2, "com.apple.recovery.boot": 3}
+    else:
+        directory_clusters = {
+            "": 2,
+            "EFI": 3,
+            "EFI/BOOT": 4,
+            "com.apple.recovery.boot": 5,
+        }
     for cluster in directory_clusters.values():
         fat[cluster] = 0x0FFFFFFF
-    files = {
-        "EFI/BOOT/BOOTx64.efi": bootx64,
-        "com.apple.recovery.boot/BaseSystem.dmg": dmg,
-        "com.apple.recovery.boot/BaseSystem.chunklist": chunklist,
-    }
+    files = {}
+    if bootx64 is not None:
+        files["EFI/BOOT/BOOTx64.efi"] = bootx64
+    files["com.apple.recovery.boot/BaseSystem.dmg"] = dmg
+    files["com.apple.recovery.boot/BaseSystem.chunklist"] = chunklist
     allocated: dict[str, list[int]] = {}
     next_cluster = 6
     for name, path in files.items():
@@ -254,12 +264,13 @@ def create_wrapper(output: Path, dmg: Path, chunklist: Path, bootx64: Path) -> d
         data.extend(b"\0" * 32)
         return bytes(data).ljust(cluster_bytes, b"\0")
 
-    children: dict[str, list[tuple[str, int, int, bool]]] = {"": [], "EFI": [], "EFI/BOOT": [], "com.apple.recovery.boot": []}
-    children[""].extend([
-        ("EFI", directory_clusters["EFI"], 0, True),
-        ("com.apple.recovery.boot", directory_clusters["com.apple.recovery.boot"], 0, True),
-    ])
-    children["EFI"].append(("BOOT", directory_clusters["EFI/BOOT"], 0, True))
+    children: dict[str, list[tuple[str, int, int, bool]]] = {path: [] for path in directory_clusters}
+    if not recovery_only:
+        children[""].append(("EFI", directory_clusters["EFI"], 0, True))
+        children[""].append(("com.apple.recovery.boot", directory_clusters["com.apple.recovery.boot"], 0, True))
+        children["EFI"].append(("BOOT", directory_clusters["EFI/BOOT"], 0, True))
+    else:
+        children[""].append(("com.apple.recovery.boot", directory_clusters["com.apple.recovery.boot"], 0, True))
     for path, source in files.items():
         parent, _, name = path.rpartition("/")
         children[parent].append((name, allocated[path][0], source.stat().st_size, False))
@@ -470,6 +481,7 @@ def inspect_wrapper(image: Path) -> dict:
         fat_cache: dict[int, int] = {}
         files: dict[str, dict] = {}
         file_clusters: dict[str, tuple[int, int]] = {}
+        directories: set[str] = set()
 
         def walk(directory: str, cluster: int, depth: int = 0):
             if depth > 4:
@@ -482,6 +494,7 @@ def inspect_wrapper(image: Path) -> dict:
                     continue
                 path = f"{directory}/{name}" if directory else name
                 if is_dir:
+                    directories.add(path.casefold())
                     walk(path, child, depth + 1)
                 else:
                     key = path.casefold()
@@ -493,20 +506,37 @@ def inspect_wrapper(image: Path) -> dict:
                     file_clusters[key] = (child, size)
 
         walk("", root_cluster)
-    required = {
-        "efi/boot/bootx64.efi",
+    recovery_files = {
         "com.apple.recovery.boot/basesystem.dmg",
         "com.apple.recovery.boot/basesystem.chunklist",
     }
+    fallback = "efi/boot/bootx64.efi"
+    recovery_only = set(files) == recovery_files
+    required = recovery_files if recovery_only else recovery_files | {fallback}
     missing = required - files.keys()
     if missing:
         raise ValueError("Recovery wrapper is missing required contents: " + ", ".join(sorted(missing)))
+    if recovery_only and "efi" in directories:
+        raise ValueError("Recovery-only wrapper must not contain an EFI directory or competing fallback.")
+    if recovery_only and set(files) != recovery_files:
+        raise ValueError("Recovery-only wrapper must contain exactly the two pinned Apple payload files.")
     if files["com.apple.recovery.boot/basesystem.dmg"]["sha256"] != PINNED_DMG_SHA256:
         raise ValueError("Recovery wrapper BaseSystem.dmg SHA-256 differs from the reviewed Apple pin.")
     if files["com.apple.recovery.boot/basesystem.chunklist"]["sha256"] != PINNED_CHUNKLIST_SHA256:
         raise ValueError("Recovery wrapper BaseSystem.chunklist SHA-256 differs from the reviewed Apple pin.")
-    if files["efi/boot/bootx64.efi"]["sha256"] != PINNED_OPENCORE_BOOT_SHA256:
+    if not recovery_only and files[fallback]["sha256"] != PINNED_OPENCORE_BOOT_SHA256:
         raise ValueError("Recovery wrapper EFI/BOOT/BOOTx64.efi differs from OpenCore 1.0.8.")
+    if recovery_only:
+        return {
+            "schema": 1,
+            "path": str(image.resolve()),
+            "bytes": image.stat().st_size,
+            "container": "GPT/FAT32",
+            "media_kind": "disk",
+            "wrapper_mode": "recovery-only",
+            "directories": sorted(directories),
+            "files": files,
+        }
     boot_cluster, boot_bytes = file_clusters["efi/boot/bootx64.efi"]
     with image.open("rb") as disk:
         # Reuse the validated geometry while reading only the PE header.
@@ -530,6 +560,7 @@ def inspect_wrapper(image: Path) -> dict:
         "bytes": image.stat().st_size,
         "container": "GPT/FAT32",
         "media_kind": "disk",
+        "wrapper_mode": "full",
         "boot_architecture": "x86_64",
         "files": files,
     }
@@ -563,6 +594,10 @@ def main() -> int:
     build.add_argument("--dmg", type=Path, required=True)
     build.add_argument("--chunklist", type=Path, required=True)
     build.add_argument("--bootx64", type=Path, required=True)
+    recovery = sub.add_parser("build-recovery-only")
+    recovery.add_argument("--output", type=Path, required=True)
+    recovery.add_argument("--dmg", type=Path, required=True)
+    recovery.add_argument("--chunklist", type=Path, required=True)
     inspect = sub.add_parser("inspect")
     inspect.add_argument("--image", type=Path, required=True)
     payload = sub.add_parser("validate-payload")
@@ -575,6 +610,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "build":
         result = create_wrapper(args.output, args.dmg, args.chunklist, args.bootx64)
+    elif args.command == "build-recovery-only":
+        result = create_wrapper(args.output, args.dmg, args.chunklist, None)
     elif args.command == "inspect":
         result = inspect_wrapper(args.image)
     elif args.command == "validate-payload":

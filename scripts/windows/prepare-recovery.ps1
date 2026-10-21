@@ -5,7 +5,8 @@ param(
     [Parameter(Mandatory)][string]$Dmg,
     [Parameter(Mandatory)][string]$Chunklist,
     [Parameter(Mandatory)][string]$Macrecovery,
-    [Parameter(Mandatory)][string]$OpenCoreZip,
+    [string]$OpenCoreZip,
+    [switch]$RecoveryOnly,
     [string]$SevenZip,
     [string]$Python
 )
@@ -15,17 +16,19 @@ $RecoveryRoot = [IO.Path]::GetFullPath($RecoveryRoot)
 $Dmg = [IO.Path]::GetFullPath($Dmg)
 $Chunklist = [IO.Path]::GetFullPath($Chunklist)
 $Macrecovery = [IO.Path]::GetFullPath($Macrecovery)
-$OpenCoreZip = [IO.Path]::GetFullPath($OpenCoreZip)
+if (!$RecoveryOnly -and !$OpenCoreZip) { throw 'Full-wrapper mode requires the pinned OpenCoreZip; use -RecoveryOnly for the opt-in payload-only wrapper.' }
+if ($OpenCoreZip) { $OpenCoreZip = [IO.Path]::GetFullPath($OpenCoreZip) }
 $free = (Get-PSDrive -Name $RecoveryRoot.Substring(0, 1)).Free
 if ($free -lt 200GB) { throw 'Recovery preparation requires at least 200 GiB free on the output drive.' }
-foreach ($path in @($Dmg, $Chunklist, $Macrecovery, $OpenCoreZip)) {
+foreach ($path in @($Dmg, $Chunklist, $Macrecovery) + $(if ($OpenCoreZip) { @($OpenCoreZip) } else { @() })) {
     if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required verified input is missing: $path" }
 }
 $helper = Join-Path $PSScriptRoot 'recovery_media.py'
 $Python = Get-ReimsTool 'python.exe' $Python
 $SevenZip = Get-ReimsTool '7z.exe' $SevenZip
 $stage = Join-Path $RecoveryRoot ('.stage1g1-' + [guid]::NewGuid().ToString('N'))
-$image = Join-Path $RecoveryRoot 'media/Recovery-wrapper.raw'
+$imageName = if ($RecoveryOnly) { 'Recovery-only.raw' } else { 'Recovery-wrapper.raw' }
+$image = Join-Path $RecoveryRoot "media/$imageName"
 New-Item -ItemType Directory -Force -Path $stage, (Split-Path $image) | Out-Null
 try {
     $verifyOutput = @(& $Python $helper verify-chunklist --dmg $Dmg --chunklist $Chunklist --macrecovery $Macrecovery)
@@ -45,12 +48,14 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Nested Recovery version/standalone booter validation failed.' }
     $payload = ($payloadOutput | Select-Object -Last 1) | ConvertFrom-Json
 
-    Invoke-ReimsTool $SevenZip @('x', '-y', "-o$stage", $OpenCoreZip, 'X64/EFI/BOOT/BOOTx64.efi') | Out-Null
-    $bootx64 = Join-Path $stage 'X64/EFI/BOOT/BOOTx64.efi'
-    if (!(Test-Path -LiteralPath $bootx64 -PathType Leaf)) { throw 'OpenCore 1.0.8 X64 EFI fallback loader was not extracted.' }
     if (Test-Path -LiteralPath $image) {
         $buildOutput = @(& $Python $helper inspect --image $image)
+    } elseif ($RecoveryOnly) {
+        $buildOutput = @(& $Python $helper build-recovery-only --output $image --dmg $Dmg --chunklist $Chunklist)
     } else {
+        Invoke-ReimsTool $SevenZip @('x', '-y', "-o$stage", $OpenCoreZip, 'X64/EFI/BOOT/BOOTx64.efi') | Out-Null
+        $bootx64 = Join-Path $stage 'X64/EFI/BOOT/BOOTx64.efi'
+        if (!(Test-Path -LiteralPath $bootx64 -PathType Leaf)) { throw 'OpenCore 1.0.8 X64 EFI fallback loader was not extracted.' }
         $buildOutput = @(& $Python $helper build --output $image --dmg $Dmg --chunklist $Chunklist --bootx64 $bootx64)
     }
     if ($LASTEXITCODE -ne 0) { throw 'File-backed GPT/FAT32 Recovery wrapper validation/build failed.' }
@@ -73,7 +78,8 @@ try {
         wrapper_sha256 = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash
         files = $wrapper.files
     }
-    $evidencePath = Join-Path $RecoveryRoot 'media/wrapper-validation.json'
+    $evidenceName = if ($RecoveryOnly) { 'recovery-only-validation.json' } else { 'wrapper-validation.json' }
+    $evidencePath = Join-Path $RecoveryRoot "media/$evidenceName"
     $rootPrefix = $RecoveryRoot.TrimEnd([char[]]@('\','/')) + [IO.Path]::DirectorySeparatorChar
     if (![IO.Path]::GetFullPath($evidencePath).StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase)) {
         throw 'Recovery evidence must stay inside the selected Recovery workspace.'

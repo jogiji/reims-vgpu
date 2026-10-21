@@ -1,5 +1,6 @@
 import hashlib
 import plistlib
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +47,13 @@ class RecoveryMediaTests(unittest.TestCase):
             )
             return recovery_media.inspect_wrapper(self.image)
 
+    def build_recovery_only(self):
+        with patch.object(recovery_media, "PINNED_DMG_SHA256", self.pin["dmg"]), patch.object(
+            recovery_media, "PINNED_CHUNKLIST_SHA256", self.pin["chunklist"]
+        ):
+            recovery_media.create_wrapper(self.image, self.dmg, self.chunklist, None)
+            return recovery_media.inspect_wrapper(self.image)
+
     def test_valid_wrapper_preserves_pinned_payload_and_recovery_layout(self):
         result = self.build()
 
@@ -90,6 +98,69 @@ class RecoveryMediaTests(unittest.TestCase):
         self.boot.write_bytes(make_pe() + b"changed")
         with self.assertRaisesRegex(ValueError, "OpenCore 1.0.8"):
             self.build()
+
+    def test_recovery_only_wrapper_contains_only_verified_apple_payload(self):
+        result = self.build_recovery_only()
+
+        self.assertEqual("recovery-only", result["wrapper_mode"])
+        self.assertEqual("GPT/FAT32", result["container"])
+        self.assertEqual(
+            {
+                "com.apple.recovery.boot/basesystem.dmg",
+                "com.apple.recovery.boot/basesystem.chunklist",
+            },
+            set(result["files"]),
+        )
+        self.assertFalse(any(path.casefold() == "efi" or path.casefold().startswith("efi/") for path in result["directories"]))
+        self.assertEqual(self.pin["dmg"], result["files"]["com.apple.recovery.boot/basesystem.dmg"]["sha256"])
+        self.assertEqual(self.pin["chunklist"], result["files"]["com.apple.recovery.boot/basesystem.chunklist"]["sha256"])
+
+    def test_recovery_only_refuses_wrong_or_missing_apple_payload(self):
+        self.dmg.write_bytes(b"changed recovery payload")
+        with self.assertRaisesRegex(ValueError, "BaseSystem.dmg SHA-256"):
+            self.build_recovery_only()
+
+        self.dmg.write_bytes(b"reviewed Tahoe recovery fixture\0" * 8192)
+        self.chunklist.unlink()
+        with self.assertRaisesRegex(ValueError, "BaseSystem.chunklist.*missing"):
+            self.build_recovery_only()
+
+    def test_recovery_only_inspector_rejects_corrupt_gpt(self):
+        self.build_recovery_only()
+        with self.image.open("r+b") as image:
+            image.seek(512)
+            image.write(b"BAD GPT!")
+        with self.assertRaisesRegex(ValueError, "GPT"):
+            recovery_media.inspect_wrapper(self.image)
+
+    def test_recovery_only_inspector_rejects_any_efi_directory(self):
+        self.build_recovery_only()
+        with self.image.open("r+b") as image:
+            disk_sectors = self.image.stat().st_size // recovery_media.SECTOR
+            volume_start, _ = recovery_media._verify_gpt(image, disk_sectors)
+            boot = recovery_media._read_exact(image, volume_start * recovery_media.SECTOR, recovery_media.SECTOR)
+            reserved = struct.unpack_from("<H", boot, 14)[0]
+            fat_count = boot[16]
+            fat_sectors = struct.unpack_from("<I", boot, 36)[0]
+            sectors_per_cluster = boot[13]
+            root_cluster = struct.unpack_from("<I", boot, 44)[0]
+            data_start = volume_start + reserved + fat_count * fat_sectors
+            root_offset = (data_start + (root_cluster - 2) * sectors_per_cluster) * recovery_media.SECTOR
+            image.seek(root_offset)
+            root = image.read(sectors_per_cluster * recovery_media.SECTOR)
+            empty_slot = next(offset for offset in range(0, len(root), 32) if root[offset] == 0)
+            image.seek(root_offset + empty_slot)
+            image.write(recovery_media._directory_entry("EFI", 4, 0, True, set()))
+            for copy in range(fat_count):
+                fat_offset = (volume_start + reserved + copy * fat_sectors) * recovery_media.SECTOR
+                image.seek(fat_offset + 4 * 4)
+                image.write(struct.pack("<I", 0x0FFFFFFF))
+            empty_dir_offset = (data_start + (4 - 2) * sectors_per_cluster) * recovery_media.SECTOR
+            image.seek(empty_dir_offset)
+            image.write(bytes(sectors_per_cluster * recovery_media.SECTOR))
+
+        with self.assertRaisesRegex(ValueError, "must not contain an EFI directory"):
+            recovery_media.inspect_wrapper(self.image)
 
     def test_misplaced_efi_tree_is_refused(self):
         self.build()
